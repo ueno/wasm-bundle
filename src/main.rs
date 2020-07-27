@@ -39,7 +39,7 @@ fn create_archive(paths: Vec<PathBuf>, prefix: &str, writer: &mut impl Write) ->
     Ok(())
 }
 
-fn filter(wasm: &[u8], output: &mut impl Write) -> Result<()> {
+fn filter(section: &str, wasm: &[u8], output: &mut impl Write) -> Result<()> {
     let mut offset: usize = 0;
     let mut parser = Parser::new(offset as u64);
     loop {
@@ -55,7 +55,7 @@ fn filter(wasm: &[u8], output: &mut impl Write) -> Result<()> {
         match payload {
             End => break,
             CustomSection { name, .. } => {
-                if name != RESOURCES_SECTION {
+                if name != section {
                     output.write_all(&wasm[offset..offset + consumed])?;
                 }
             }
@@ -73,9 +73,9 @@ fn filter(wasm: &[u8], output: &mut impl Write) -> Result<()> {
     Ok(())
 }
 
-fn append(mut archive: &std::fs::File, writer: &mut impl Write) -> Result<()> {
+fn append(section: &str, mut archive: &std::fs::File, writer: &mut impl Write) -> Result<()> {
     let mut header: Vec<u8> = Vec::new();
-    let name = RESOURCES_SECTION.as_bytes();
+    let name = section.as_bytes();
     leb128::write::unsigned(&mut header, name.len() as u64)?;
     header.write_all(name)?;
     let size = archive.seek(std::io::SeekFrom::End(0))?;
@@ -119,7 +119,16 @@ fn main() {
                 .help("Sets the path prefix to be removed")
                 .short("-p")
                 .long("prefix")
-                .takes_value(true),
+                .takes_value(true)
+                .default_value(""),
+        )
+        .arg(
+            Arg::with_name("section")
+                .help("Sets the section name")
+                .short("-j")
+                .long("section")
+                .takes_value(true)
+                .default_value(RESOURCES_SECTION),
         )
         .usage("find dir -type f | wasm-bundle INPUT OUTPUT")
         .get_matches();
@@ -132,15 +141,16 @@ fn main() {
     let paths = read_paths(&mut reader).expect("couldn't read file list");
     let mut archive = tempfile::tempfile().expect("couldn't create a temp file");
 
-    let prefix = matches.value_of("prefix").unwrap_or("");
+    let prefix = matches.value_of("prefix").unwrap();
     create_archive(paths, &prefix, &mut archive).expect("couldn't create archive");
 
     // Filter out the existing .resources section
     let input = std::fs::read(&input_path).expect("couldn't open input file");
     let mut output = std::fs::File::create(&output_path).expect("couldn't create output file");
 
-    filter(&input, &mut output).expect("couldn't filter sections");
+    let section = matches.value_of("section").unwrap();
+    filter(&section, &input, &mut output).expect("couldn't filter sections");
 
     // Append a custom .resources section with the created archive
-    append(&archive, &mut output).expect("couldn't append custom section");
+    append(&section, &archive, &mut output).expect("couldn't append custom section");
 }
