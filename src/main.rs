@@ -30,6 +30,12 @@ fn create_archive(paths: Vec<PathBuf>, prefix: &str, writer: &mut impl Write) ->
     let mut builder = tar::Builder::new(writer);
 
     for path in paths {
+        for ancestor in path.ancestors() {
+            let metadata = std::fs::metadata(&ancestor)?;
+            if !metadata.is_dir() && !metadata.is_file() {
+                return Err(ErrorKind::InvalidInput.into());
+            }
+        }
         let name = path.strip_prefix(prefix).or(Err(ErrorKind::InvalidInput))?;
         builder.append_path_with_name(&path, &name)?;
     }
