@@ -3,7 +3,7 @@
 use clap::{App, Arg};
 use std::io::prelude::*;
 use std::io::{BufReader, ErrorKind, Read, Result, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use wasmparser::{Chunk, Parser, Payload::*};
 
 const RESOURCES_SECTION: &str = ".enarx.resources";
@@ -31,6 +31,9 @@ fn create_archive(paths: Vec<PathBuf>, prefix: &str, writer: &mut impl Write) ->
 
     for path in paths {
         for ancestor in path.ancestors() {
+            if ancestor == Path::new("") {
+                break;
+            }
             let metadata = std::fs::metadata(&ancestor)?;
             if !metadata.is_dir() && !metadata.is_file() {
                 return Err(ErrorKind::InvalidInput.into());
