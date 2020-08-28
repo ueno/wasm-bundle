@@ -48,36 +48,62 @@ fn create_archive(paths: Vec<PathBuf>, prefix: &str, writer: &mut impl Write) ->
     Ok(())
 }
 
-fn filter(section: &str, wasm: &[u8], output: &mut impl Write) -> Result<()> {
-    let mut offset: usize = 0;
-    let mut parser = Parser::new(offset as u64);
+fn filter(section: &str, mut input: impl Read, output: &mut impl Write) -> Result<()> {
+    let mut buf = Vec::new();
+    let mut parser = Parser::new(0);
+    let mut eof = false;
+    let mut stack = Vec::new();
+
     loop {
-        let (consumed, payload) = match parser
-            .parse(&wasm[offset..], true)
+        let (payload, consumed) = match parser.parse(&buf, eof)
             .or(Err(ErrorKind::InvalidInput))?
         {
-            Chunk::Parsed { consumed, payload } => (consumed, payload),
-            // this state isn't possible with `eof = true`
-            Chunk::NeedMoreData(_) => unreachable!(),
+            Chunk::NeedMoreData(hint) => {
+                assert!(!eof); // otherwise an error would be returned
+
+                // Use the hint to preallocate more space, then read
+                // some more data into our buffer.
+                //
+                // Note that the buffer management here is not ideal,
+                // but it's compact enough to fit in an example!
+                let len = buf.len();
+                buf.extend((0..hint).map(|_| 0u8));
+                let n = input.read(&mut buf[len..])?;
+                buf.truncate(len + n);
+                eof = n == 0;
+                continue;
+            }
+
+            Chunk::Parsed { consumed, payload } => (payload, consumed),
         };
 
         match payload {
-            End => break,
             CustomSection { name, .. } => {
                 if name != section {
-                    output.write_all(&wasm[offset..offset + consumed])?;
+                    output.write_all(&buf[..consumed])?;
                 }
             }
-            CodeSectionStart { size, .. } | ModuleCodeSectionStart { size, .. } => {
-                parser.skip_section();
-                output.write_all(&wasm[offset..offset + consumed + size as usize])?;
-                offset += size as usize;
+            // When parsing nested modules we need to switch which
+            // `Parser` we're using.
+            ModuleCodeSectionEntry { parser: subparser, .. } => {
+                stack.push(parser);
+                parser = subparser;
+            }
+            End => {
+                if let Some(parent_parser) = stack.pop() {
+                    parser = parent_parser;
+                } else {
+                    break;
+                }
             }
             _ => {
-                output.write_all(&wasm[offset..offset + consumed])?;
+                output.write_all(&buf[..consumed])?;
             }
         }
-        offset += consumed;
+
+        // once we're done processing the payload we can forget the
+        // original.
+        buf.drain(..consumed);
     }
     Ok(())
 }
@@ -158,7 +184,7 @@ fn main() {
     let mut output = std::fs::File::create(&output_path).expect("couldn't create output file");
 
     let section = matches.value_of("section").unwrap();
-    filter(&section, &input, &mut output).expect("couldn't filter sections");
+    filter(&section, input.as_slice(), &mut output).expect("couldn't filter sections");
 
     // Append a custom .resources section with the created archive
     append(&section, &archive, &mut output).expect("couldn't append custom section");
